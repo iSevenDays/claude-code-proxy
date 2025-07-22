@@ -75,6 +75,206 @@ for handler in logger.handlers:
     if isinstance(handler, logging.StreamHandler):
         handler.setFormatter(ColorizedFormatter('%(asctime)s - %(levelname)s - %(message)s'))
 
+# Create comprehensive logging setup for debugging
+log_dir = os.path.join(os.path.dirname(__file__), "logs")
+os.makedirs(log_dir, exist_ok=True)
+
+# Create per-conversation log directory with timestamp
+from datetime import datetime
+timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+conversation_log_dir = os.path.join(log_dir, f"conversation_{timestamp}")
+os.makedirs(conversation_log_dir, exist_ok=True)
+print(f"🔍 Debug logs for this session: {conversation_log_dir}")
+
+# Common formatter with detailed timestamp
+detailed_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
+simple_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+# 1. Debug logger for function calling requests (reduced logging)
+debug_logger = logging.getLogger("function_calling_debug")
+debug_logger.setLevel(logging.DEBUG)  # Changed back to DEBUG for better debugging
+debug_file_handler = logging.FileHandler(os.path.join(conversation_log_dir, "function_calling_debug.log"))
+debug_file_handler.setLevel(logging.DEBUG)
+debug_file_handler.setFormatter(detailed_formatter)
+debug_logger.addHandler(debug_file_handler)
+
+# 2. Request logger for all API requests
+request_logger = logging.getLogger("request_logger")
+request_logger.setLevel(logging.DEBUG)
+request_file_handler = logging.FileHandler(os.path.join(conversation_log_dir, "requests.log"))
+request_file_handler.setLevel(logging.DEBUG)
+request_file_handler.setFormatter(simple_formatter)
+request_logger.addHandler(request_file_handler)
+
+# 3. Tool calls logger - dedicated for tool call processing
+tool_logger = logging.getLogger("tool_calls")
+tool_logger.setLevel(logging.DEBUG)
+tool_file_handler = logging.FileHandler(os.path.join(conversation_log_dir, "tool_calls.log"))
+tool_file_handler.setLevel(logging.DEBUG)
+tool_file_handler.setFormatter(detailed_formatter)
+tool_logger.addHandler(tool_file_handler)
+
+# 4. Model mapping logger - for debugging model routing
+model_logger = logging.getLogger("model_mapping")
+model_logger.setLevel(logging.DEBUG)
+model_file_handler = logging.FileHandler(os.path.join(conversation_log_dir, "model_mapping.log"))
+model_file_handler.setLevel(logging.DEBUG)
+model_file_handler.setFormatter(detailed_formatter)
+model_logger.addHandler(model_file_handler)
+
+# 5. Error logger - dedicated for errors and exceptions
+error_logger = logging.getLogger("errors")
+error_logger.setLevel(logging.ERROR)
+error_file_handler = logging.FileHandler(os.path.join(conversation_log_dir, "errors.log"))
+error_file_handler.setLevel(logging.ERROR)
+error_file_handler.setFormatter(detailed_formatter)
+error_logger.addHandler(error_file_handler)
+
+def log_function_calling_request(request_data: dict, endpoint: str):
+    """Log function calling request details to debug file - concise version"""
+    try:
+        tool_names = [tool.get("name", "unknown") for tool in request_data.get("tools", [])]
+        tools_str = f"[{','.join(tool_names[:5])}{'+...' if len(tool_names) > 5 else ''}]({len(tool_names)})"
+        
+        debug_logger.debug(
+            f"🔧 FUNCTION_CALL_REQ: {request_data.get('model')} | "
+            f"stream={request_data.get('stream')} | "
+            f"tools={tools_str} | "
+            f"messages={len(request_data.get('messages', []))}"
+        )
+        
+    except Exception as e:
+        debug_logger.error(f"Error logging function calling request: {str(e)}")
+
+def log_function_calling_response(response_data: dict, request_id: str = None):
+    """Log function calling response details to debug file"""
+    try:
+        log_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "request_id": request_id or str(uuid.uuid4()),
+            "response_type": "function_calling_response",
+            "raw_response": response_data
+        }
+        
+        debug_logger.debug(f"FUNCTION_CALLING_RESPONSE: {json.dumps(log_entry, indent=2)}")
+        
+    except Exception as e:
+        debug_logger.error(f"Error logging function calling response: {str(e)}")
+
+def log_function_calling_error(error: Exception, request_data: dict = None, context: str = ""):
+    """Log function calling errors to dedicated error log"""
+    try:
+        log_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "error_type": type(error).__name__,
+            "error_message": str(error),
+            "context": context,
+            "request_data": request_data,
+            "traceback": traceback.format_exc()
+        }
+        
+        # Log to both debug and error loggers
+        debug_logger.error(f"FUNCTION_CALLING_ERROR: {json.dumps(log_entry, indent=2)}")
+        error_logger.error(f"FUNCTION_CALLING_ERROR: {json.dumps(log_entry, indent=2)}")
+        
+    except Exception as e:
+        debug_logger.error(f"Error logging function calling error: {str(e)}")
+        error_logger.error(f"Error logging function calling error: {str(e)}")
+
+def log_tool_call_processing(tool_calls, model, is_tool_capable, processing_path):
+    """Log detailed tool call processing information"""
+    try:
+        log_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "tool_calls_present": bool(tool_calls),
+            "tool_calls_count": len(tool_calls) if tool_calls else 0,
+            "model": model,
+            "is_tool_capable_model": is_tool_capable,
+            "processing_path": processing_path,
+            "tool_calls_details": [
+                {
+                    "id": getattr(tc, 'id', 'unknown') if hasattr(tc, 'id') else tc.get('id', 'unknown'),
+                    "name": getattr(getattr(tc, 'function', None), 'name', 'unknown') if hasattr(tc, 'function') else tc.get('function', {}).get('name', 'unknown'),
+                    "type": getattr(tc, 'type', 'unknown') if hasattr(tc, 'type') else tc.get('type', 'unknown')
+                } for tc in (tool_calls if tool_calls else [])
+            ]
+        }
+        
+        tool_logger.debug(f"TOOL_CALL_PROCESSING: {json.dumps(log_entry, indent=2)}")
+        
+    except Exception as e:
+        tool_logger.error(f"Error logging tool call processing: {str(e)}")
+
+def log_model_mapping(original_model, mapped_model, provider, context=""):
+    """Log model mapping decisions"""
+    try:
+        log_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "original_model": original_model,
+            "mapped_model": mapped_model,
+            "provider": provider,
+            "context": context
+        }
+        
+        model_logger.debug(f"MODEL_MAPPING: {json.dumps(log_entry, indent=2)}")
+        
+    except Exception as e:
+        model_logger.error(f"Error logging model mapping: {str(e)}")
+
+def truncate_large_object(obj, max_chars=60):
+    """Truncate large objects to show first and last 30 characters"""
+    try:
+        if obj is None:
+            return "None"
+        
+        obj_str = str(obj)
+        if len(obj_str) <= max_chars:
+            return obj_str
+        
+        half = max_chars // 2
+        return f"{obj_str[:half]}...{obj_str[-half:]}"
+    except:
+        return str(obj)[:max_chars] + "..." if len(str(obj)) > max_chars else str(obj)
+
+def log_end_to_end_flow(request_id, step, data, request_model=None):
+    """Log unified end-to-end flow for a single request"""
+    try:
+        # Truncate large objects
+        clean_data = {}
+        for key, value in (data if isinstance(data, dict) else {"data": data}).items():
+            if key in ["tools", "tool_calls", "function", "raw_request", "raw_response"]:
+                clean_data[key] = truncate_large_object(value)
+            elif isinstance(value, list) and len(value) > 0:
+                # For arrays, show count and truncate first item
+                if len(value) > 1:
+                    clean_data[key] = f"[{len(value)} items] {truncate_large_object(value[0])}"
+                else:
+                    clean_data[key] = truncate_large_object(value[0])
+            else:
+                clean_data[key] = value
+        
+        log_entry = {
+            "request_id": request_id,
+            "timestamp": datetime.now().isoformat(),
+            "step": step,
+            "model": request_model,
+            "data": clean_data
+        }
+        
+        # Log to dedicated end-to-end file
+        e2e_logger = logging.getLogger("end_to_end")
+        if not e2e_logger.handlers:
+            e2e_logger.setLevel(logging.DEBUG)
+            e2e_file_handler = logging.FileHandler(os.path.join(conversation_log_dir, "end_to_end.log"))
+            e2e_file_handler.setLevel(logging.DEBUG)
+            e2e_file_handler.setFormatter(detailed_formatter)
+            e2e_logger.addHandler(e2e_file_handler)
+        
+        e2e_logger.debug(f"E2E_FLOW: {json.dumps(log_entry, indent=2)}")
+        
+    except Exception as e:
+        debug_logger.error(f"Error logging end-to-end flow: {str(e)}")
+
 app = FastAPI()
 
 # Get API keys from environment
@@ -211,29 +411,39 @@ class MessagesRequest(BaseModel):
             if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{SMALL_MODEL}"
                 mapped = True
+                log_model_mapping(original_model, new_model, "gemini", "haiku_to_small_model_gemini")
             else:
                 new_model = f"openai/{SMALL_MODEL}"
                 mapped = True
+                log_model_mapping(original_model, new_model, "openai", "haiku_to_small_model_openai")
 
         # Map Sonnet to BIG_MODEL based on provider preference
         elif 'sonnet' in clean_v.lower():
             if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{BIG_MODEL}"
                 mapped = True
+                log_model_mapping(original_model, new_model, "gemini", "sonnet_to_big_model_gemini")
             else:
                 new_model = f"openai/{BIG_MODEL}"
                 mapped = True
+                log_model_mapping(original_model, new_model, "openai", "sonnet_to_big_model_openai")
 
         # Add prefixes to non-mapped models if they match known lists
         elif not mapped:
             if clean_v in GEMINI_MODELS and not v.startswith('gemini/'):
                 new_model = f"gemini/{clean_v}"
                 mapped = True # Technically mapped to add prefix
+                log_model_mapping(original_model, new_model, "gemini", "prefix_addition_gemini")
             elif clean_v in OPENAI_MODELS and not v.startswith('openai/'):
                 new_model = f"openai/{clean_v}"
                 mapped = True # Technically mapped to add prefix
+                log_model_mapping(original_model, new_model, "openai", "prefix_addition_openai")
         # --- Mapping Logic --- END ---
 
+        # Log final mapping result
+        if original_model != new_model:
+            log_model_mapping(original_model, new_model, PREFERRED_PROVIDER, "final_validation_mapping")
+        
         if mapped:
             logger.debug(f"📌 MODEL MAPPING: '{original_model}' ➡️ '{new_model}'")
         else:
@@ -561,8 +771,11 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
     if anthropic_request.tools:
         openai_tools = []
         is_gemini_model = anthropic_request.model.startswith("gemini/")
+        
+        debug_logger.debug(f"Converting {len(anthropic_request.tools)} tools for model: {anthropic_request.model}")
+        conversion_errors = 0
 
-        for tool in anthropic_request.tools:
+        for i, tool in enumerate(anthropic_request.tools):
             # Convert to dict if it's a pydantic model
             if hasattr(tool, 'dict'):
                 tool_dict = tool.dict()
@@ -571,14 +784,18 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
                 try:
                     tool_dict = dict(tool) if not isinstance(tool, dict) else tool
                 except (TypeError, ValueError):
-                     logger.error(f"Could not convert tool to dict: {tool}")
+                     logger.error(f"Could not convert tool {i} to dict: {tool}")
+                     debug_logger.error(f"TOOL_CONVERSION_ERROR: Tool index {i}, type: {type(tool)}, value: {tool}")
+                     conversion_errors += 1
                      continue # Skip this tool if conversion fails
 
             # Clean the schema if targeting a Gemini model
             input_schema = tool_dict.get("input_schema", {})
             if is_gemini_model:
                  logger.debug(f"Cleaning schema for Gemini tool: {tool_dict.get('name')}")
+                 debug_logger.debug(f"GEMINI_SCHEMA_CLEANING: {tool_dict.get('name')} - Original: {input_schema}")
                  input_schema = clean_gemini_schema(input_schema)
+                 debug_logger.debug(f"GEMINI_SCHEMA_CLEANED: {tool_dict.get('name')} - Cleaned: {input_schema}")
 
             # Create OpenAI-compatible function tool
             openai_tool = {
@@ -590,8 +807,26 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
                 }
             }
             openai_tools.append(openai_tool)
+            # Compact tool logging - just name and parameter count
+            param_count = len(openai_tool.get('function', {}).get('parameters', {}).get('properties', {}))
+            debug_logger.debug(f"🔧 CONVERTED_TOOL: {openai_tool.get('function', {}).get('name', 'unknown')} | params={param_count}")
 
+        # Validate tool conversion results
+        if conversion_errors > 0:
+            logger.warning(f"⚠️  Tool conversion had {conversion_errors} errors out of {len(anthropic_request.tools)} tools")
+            debug_logger.warning(f"TOOL_CONVERSION_SUMMARY: Errors: {conversion_errors}, Original: {len(anthropic_request.tools)}, Converted: {len(openai_tools)}")
+        
+        if len(openai_tools) == 0:
+            logger.error(f"🚨 CRITICAL: All {len(anthropic_request.tools)} tools failed to convert! This will cause tool stripping.")
+            debug_logger.error(f"TOOL_CONVERSION_TOTAL_FAILURE: Original tools count: {len(anthropic_request.tools)}, Final tools count: 0")
+        elif len(openai_tools) != len(anthropic_request.tools):
+            logger.warning(f"⚠️  Tool count mismatch: {len(anthropic_request.tools)} → {len(openai_tools)}")
+            debug_logger.warning(f"TOOL_COUNT_MISMATCH: Original: {len(anthropic_request.tools)}, Final: {len(openai_tools)}")
+        
         litellm_request["tools"] = openai_tools
+        # Compact final tools summary
+        tool_names = [t.get('function', {}).get('name', 'unknown') for t in openai_tools]
+        debug_logger.debug(f"🔧 FINAL_TOOLS: [{','.join(tool_names)}] ({len(openai_tools)} tools)")
     
     # Convert tool_choice to OpenAI format if present
     if anthropic_request.tool_choice:
@@ -630,8 +865,17 @@ def convert_litellm_to_anthropic(litellm_response: Union[Dict[str, Any], Any],
         elif clean_model.startswith("openai/"):
             clean_model = clean_model[len("openai/"):]
         
-        # Check if this is a Claude model (which supports content blocks)
-        is_claude_model = clean_model.startswith("claude-")
+        # Debug logging for model detection
+        debug_logger.debug(f"RESPONSE_CONVERSION: original_model={original_request.model}, clean_model={clean_model}")
+        
+        # Check if this model supports tool_use content blocks
+        # Include Claude models and other tool-capable models like Kimi-K2
+        is_tool_capable_model = (clean_model.startswith("claude-") or 
+                               clean_model.lower().startswith("kimi"))
+        debug_logger.debug(f"MODEL_DETECTION: is_tool_capable_model={is_tool_capable_model} (clean_model={clean_model})")
+        
+        # Debug: log the type and structure of the response
+        debug_logger.debug(f"LITELLM_RESPONSE_TYPE: {type(litellm_response)}")
         
         # Handle ModelResponse object from LiteLLM
         if hasattr(litellm_response, 'choices') and hasattr(litellm_response, 'usage'):
@@ -641,6 +885,10 @@ def convert_litellm_to_anthropic(litellm_response: Union[Dict[str, Any], Any],
             content_text = message.content if message and hasattr(message, 'content') else ""
             tool_calls = message.tool_calls if message and hasattr(message, 'tool_calls') else None
             finish_reason = choices[0].finish_reason if choices and len(choices) > 0 else "stop"
+            
+            # Debug logging for tool calls detection
+            tool_calls_str = str(tool_calls) if tool_calls else "None"
+            debug_logger.debug(f"TOOL_CALLS_DETECTION: content_text={content_text}, tool_calls={tool_calls_str}, finish_reason={finish_reason}")
             usage_info = litellm_response.usage
             response_id = getattr(litellm_response, 'id', f"msg_{uuid.uuid4()}")
         else:
@@ -676,8 +924,12 @@ def convert_litellm_to_anthropic(litellm_response: Union[Dict[str, Any], Any],
         if content_text is not None and content_text != "":
             content.append({"type": "text", "text": content_text})
         
-        # Add tool calls if present (tool_use in Anthropic format) - only for Claude models
-        if tool_calls and is_claude_model:
+        # Add tool calls if present (tool_use in Anthropic format) - for tool-capable models
+        debug_logger.debug(f"TOOL_CALLS_CONDITION_CHECK: tool_calls={bool(tool_calls)}, is_tool_capable_model={is_tool_capable_model}, tool_calls_value={tool_calls}")
+        
+        if tool_calls and is_tool_capable_model:
+            log_tool_call_processing(tool_calls, clean_model, is_tool_capable_model, "ANTHROPIC_TOOL_USE_CONVERSION")
+            debug_logger.debug(f"PROCESSING_TOOL_CALLS_CLAUDE_PATH: {tool_calls}")
             logger.debug(f"Processing tool calls: {tool_calls}")
             
             # Convert to list if it's not already
@@ -690,14 +942,46 @@ def convert_litellm_to_anthropic(litellm_response: Union[Dict[str, Any], Any],
                 # Extract function data based on whether it's a dict or object
                 if isinstance(tool_call, dict):
                     function = tool_call.get("function", {})
-                    tool_id = tool_call.get("id", f"tool_{uuid.uuid4()}")
-                    name = function.get("name", "")
+                    openai_tool_id = tool_call.get("id", f"tool_{uuid.uuid4()}")
+                    openai_name = function.get("name", "")
                     arguments = function.get("arguments", "{}")
                 else:
                     function = getattr(tool_call, "function", None)
-                    tool_id = getattr(tool_call, "id", f"tool_{uuid.uuid4()}")
-                    name = getattr(function, "name", "") if function else ""
+                    openai_tool_id = getattr(tool_call, "id", f"tool_{uuid.uuid4()}")
+                    openai_name = getattr(function, "name", "") if function else ""
                     arguments = getattr(function, "arguments", "{}") if function else "{}"
+                
+                # Convert OpenAI-style tool ID to Anthropic-style (preserve original ID structure)
+                if openai_tool_id.startswith("functions."):
+                    tool_id = f"toolu_{uuid.uuid4().hex[:24]}"  # Generate Anthropic-style for function calls
+                else:
+                    tool_id = openai_tool_id  # Preserve original if it's already in good format
+                
+                # Preserve original tool names - minimal conversion only
+                name = openai_name
+                
+                # Log the conversion for debugging
+                debug_logger.debug(f"TOOL_ID_CONVERSION: OpenAI_ID='{openai_tool_id}' -> Anthropic_ID='{tool_id}', OpenAI_Name='{openai_name}' -> Anthropic_Name='{name}'")
+                
+                # Log to end-to-end flow
+                try:
+                    # Extract request_id from the calling context if available
+                    import inspect
+                    frame = inspect.currentframe()
+                    while frame:
+                        if 'request_id' in frame.f_locals:
+                            req_id = frame.f_locals['request_id']
+                            log_end_to_end_flow(req_id, "5_TOOL_ID_NAME_CONVERSION", {
+                                "openai_tool_id": openai_tool_id,
+                                "anthropic_tool_id": tool_id,
+                                "openai_name": openai_name,
+                                "anthropic_name": name,
+                                "arguments": truncate_large_object(arguments)
+                            }, original_request.model)
+                            break
+                        frame = frame.f_back
+                except:
+                    pass  # Don't let logging errors break the main flow
                 
                 # Convert string arguments to dict if needed
                 if isinstance(arguments, str):
@@ -715,9 +999,15 @@ def convert_litellm_to_anthropic(litellm_response: Union[Dict[str, Any], Any],
                     "name": name,
                     "input": arguments
                 })
-        elif tool_calls and not is_claude_model:
+        elif tool_calls and not is_tool_capable_model:
             # For non-Claude models, convert tool calls to text format
+            log_tool_call_processing(tool_calls, clean_model, is_tool_capable_model, "TEXT_FORMAT_CONVERSION")
+            debug_logger.debug(f"PROCESSING_TOOL_CALLS_NON_CLAUDE_PATH: clean_model={clean_model}, tool_calls={tool_calls}")
             logger.debug(f"Converting tool calls to text for non-Claude model: {clean_model}")
+        else:
+            if tool_calls:
+                log_tool_call_processing(tool_calls, clean_model, is_tool_capable_model, "SKIPPED_NO_CONDITION_MATCH")
+            debug_logger.debug(f"TOOL_CALLS_SKIPPED: tool_calls={bool(tool_calls)}, is_tool_capable_model={is_tool_capable_model}, reason=no_matching_condition")
             
             # We'll append tool info to the text content
             tool_text = "\n\nTool usage:\n"
@@ -815,6 +1105,15 @@ def convert_litellm_to_anthropic(litellm_response: Union[Dict[str, Any], Any],
 async def handle_streaming(response_generator, original_request: MessagesRequest):
     """Handle streaming responses from LiteLLM and convert to Anthropic format."""
     try:
+        # Request-Response Correlation Tracking
+        correlation_id = f"corr_{uuid.uuid4().hex[:12]}"
+        response_start_time = time.time()
+        debug_logger.debug(f"🔄 RESPONSE_START: Correlation ID: {correlation_id}, Model: {original_request.model}, Has_Tools: {bool(getattr(original_request, 'tools', None))}")
+        
+        chunk_count = 0
+        tool_calls_received = 0
+        text_content_received = False
+        
         # Send message_start event
         message_id = f"msg_{uuid.uuid4().hex[:24]}"  # Format similar to Anthropic's IDs
         
@@ -858,6 +1157,15 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
         # Process each chunk
         async for chunk in response_generator:
             try:
+                chunk_count += 1
+                
+                # Enhanced chunk tracking with correlation
+                debug_logger.debug(f"🔍 RAW CHUNK #{chunk_count} [Corr: {correlation_id}]: {chunk}")
+                debug_logger.debug(f"🔍 RAW CHUNK TYPE: {type(chunk)}")
+                if hasattr(chunk, '__dict__'):
+                    debug_logger.debug(f"🔍 RAW CHUNK ATTRS: {vars(chunk)}")
+                else:
+                    debug_logger.debug(f"🔍 RAW CHUNK (dict): {dict(chunk) if hasattr(chunk, 'keys') else 'not dict-like'}")
 
                 
                 # Check if this is the end of the response with usage data
@@ -893,6 +1201,11 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
                     # Accumulate text content
                     if delta_content is not None and delta_content != "":
                         accumulated_text += delta_content
+                        text_content_received = True
+                        
+                        # Enhanced text content tracking with correlation
+                        debug_logger.debug(f"📝 TEXT_CONTENT [Corr: {correlation_id}]: Delta: '{delta_content}', Total length: {len(accumulated_text)}")
+                        debug_logger.debug(f"🔍 TEXT ACCUMULATED: '{accumulated_text}'")
                         
                         # Always emit text deltas if no tool calls started
                         if tool_index is None and not text_block_closed:
@@ -910,6 +1223,8 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
                     
                     # Process tool calls if any
                     if delta_tool_calls:
+                        tool_calls_received += len(delta_tool_calls)
+                        debug_logger.debug(f"🔧 TOOL_CALLS_DETECTED [Corr: {correlation_id}]: Count: {len(delta_tool_calls)}, Total so far: {tool_calls_received}")
                         # First tool call we've seen - need to handle text properly
                         if tool_index is None:
                             # If we've been streaming text, close that text block
@@ -935,6 +1250,12 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
                             delta_tool_calls = [delta_tool_calls]
                         
                         for tool_call in delta_tool_calls:
+                            # CRITICAL DEBUG: Log what we're receiving from LiteLLM
+                            debug_logger.debug(f"🔍 TOOL CALL DEBUG: Received tool_call: {tool_call}")
+                            debug_logger.debug(f"🔍 TOOL CALL TYPE: {type(tool_call)}")
+                            if hasattr(tool_call, '__dict__'):
+                                debug_logger.debug(f"🔍 TOOL CALL ATTRS: {vars(tool_call)}")
+                            
                             # Get the index of this tool call (for multiple tools)
                             current_index = None
                             if isinstance(tool_call, dict) and 'index' in tool_call:
@@ -954,12 +1275,24 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
                                 # Extract function info
                                 if isinstance(tool_call, dict):
                                     function = tool_call.get('function', {})
-                                    name = function.get('name', '') if isinstance(function, dict) else ""
-                                    tool_id = tool_call.get('id', f"toolu_{uuid.uuid4().hex[:24]}")
+                                    openai_name = function.get('name', '') if isinstance(function, dict) else ""
+                                    openai_tool_id = tool_call.get('id', f"tool_{uuid.uuid4()}")
                                 else:
                                     function = getattr(tool_call, 'function', None)
-                                    name = getattr(function, 'name', '') if function else ''
-                                    tool_id = getattr(tool_call, 'id', f"toolu_{uuid.uuid4().hex[:24]}")
+                                    openai_name = getattr(function, 'name', '') if function else ''
+                                    openai_tool_id = getattr(tool_call, 'id', f"tool_{uuid.uuid4()}")
+                                
+                                # Convert OpenAI-style tool ID to Anthropic-style (streaming)
+                                if openai_tool_id.startswith("functions."):
+                                    tool_id = f"toolu_{uuid.uuid4().hex[:24]}"  # Generate Anthropic-style for function calls
+                                else:
+                                    tool_id = openai_tool_id  # Preserve original if it's already in good format
+                                
+                                # Preserve original tool names (streaming) - minimal conversion
+                                name = openai_name
+                                
+                                # Log conversion for streaming
+                                debug_logger.debug(f"STREAMING_TOOL_CONVERSION: OpenAI_ID='{openai_tool_id}' -> Anthropic_ID='{tool_id}', OpenAI_Name='{openai_name}' -> Anthropic_Name='{name}'")
                                 
                                 # Start a new tool_use block
                                 yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': anthropic_tool_index, 'content_block': {'type': 'tool_use', 'id': tool_id, 'name': name, 'input': {}}})}\n\n"
@@ -1032,6 +1365,10 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
                         
                         # Send final [DONE] marker to match Anthropic's behavior
                         yield "data: [DONE]\n\n"
+                        
+                        # Final response correlation tracking
+                        response_duration = time.time() - response_start_time
+                        debug_logger.debug(f"✅ RESPONSE_COMPLETE [Corr: {correlation_id}]: Duration: {response_duration:.2f}s, Chunks: {chunk_count}, Tools: {tool_calls_received}, Text: {text_content_received}")
                         return
             except Exception as e:
                 # Log error but continue processing other chunks
@@ -1058,6 +1395,10 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
             
             # Send final [DONE] marker to match Anthropic's behavior
             yield "data: [DONE]\n\n"
+            
+            # Final response correlation tracking (fallback path)
+            response_duration = time.time() - response_start_time
+            debug_logger.debug(f"✅ RESPONSE_COMPLETE_FALLBACK [Corr: {correlation_id}]: Duration: {response_duration:.2f}s, Chunks: {chunk_count}, Tools: {tool_calls_received}, Text: {text_content_received}")
     
     except Exception as e:
         import traceback
@@ -1079,6 +1420,9 @@ async def create_message(
     request: MessagesRequest,
     raw_request: Request
 ):
+    # Generate unique request ID for end-to-end tracking
+    request_id = str(uuid.uuid4())
+    
     try:
         # print the body here
         body = await raw_request.body()
@@ -1086,6 +1430,30 @@ async def create_message(
         # Parse the raw body as JSON since it's bytes
         body_json = json.loads(body.decode('utf-8'))
         original_model = body_json.get("model", "unknown")
+        
+        # Log incoming request
+        log_end_to_end_flow(request_id, "1_INCOMING_REQUEST", {
+            "original_model": original_model,
+            "has_tools": bool(body_json.get("tools")),
+            "num_tools": len(body_json.get("tools", [])),
+            "stream": body_json.get("stream", False),
+            "endpoint": "/v1/messages"
+        }, original_model)
+        
+        # Log request details if it has tools (function calling)
+        if body_json.get("tools"):
+            log_function_calling_request(body_json, "/v1/messages")
+        
+        # Log all requests to requests.log
+        # Concise request summary for LLM analysis
+        tools_summary = ""
+        if body_json.get('tools'):
+            tool_names = [tool.get('name', 'unknown') for tool in body_json['tools'][:3]]  # First 3 only
+            tools_summary = f"tools=[{','.join(tool_names)}{'+' if len(body_json['tools']) > 3 else ''}({len(body_json['tools'])})]"
+        else:
+            tools_summary = "tools=none"
+        
+        request_logger.debug(f"📥 REQUEST /v1/messages: model={body_json.get('model')}, stream={body_json.get('stream')}, {tools_summary}, messages={len(body_json.get('messages', []))}")
         
         # Get the display name for logging, just the model name without provider prefix
         display_model = original_model
@@ -1099,10 +1467,27 @@ async def create_message(
         elif clean_model.startswith("openai/"):
             clean_model = clean_model[len("openai/"):]
         
-        logger.debug(f"📊 PROCESSING REQUEST: Model={request.model}, Stream={request.stream}")
+        # Clear execution flow marker
+        logger.debug(f"🔄 PROCESSING: {request.model} | stream={request.stream} | tools={len(request.tools) if request.tools else 0}")
+        
+        # Log model mapping
+        log_end_to_end_flow(request_id, "2_MODEL_MAPPING", {
+            "original_model": original_model,
+            "mapped_model": request.model,
+            "mapping_occurred": original_model != request.model
+        }, request.model)
         
         # Convert Anthropic request to LiteLLM format
         litellm_request = convert_anthropic_to_litellm(request)
+        
+        # Log tool conversion
+        if request.tools:
+            log_end_to_end_flow(request_id, "3_TOOL_CONVERSION", {
+                "anthropic_tools": request.tools,
+                "litellm_tools": litellm_request.get("tools"),
+                "num_tools": len(request.tools)
+            }, request.model)
+            debug_logger.debug(f"LITELLM_REQUEST_AFTER_CONVERSION: tools key exists: {'tools' in litellm_request}, tools type: {type(litellm_request.get('tools'))}")
         
         # Determine which API key to use based on the model
         if request.model.startswith("openai/"):
@@ -1118,9 +1503,31 @@ async def create_message(
             litellm_request["api_key"] = ANTHROPIC_API_KEY
             logger.debug(f"Using Anthropic API key for model: {request.model}")
         
+        # For Kimi models - convert complex content blocks to simple strings
+        if "kimi" in litellm_request["model"].lower() and "messages" in litellm_request:
+            debug_logger.debug(f"🔧 KIMI_PROCESSING_START: {litellm_request['model']} | tools={len(request.tools) if request.tools else 0}")
+            
+            # Convert complex content blocks to simple strings for Kimi compatibility
+            for i, message in enumerate(litellm_request["messages"]):
+                if isinstance(message.get("content"), list):
+                    # Convert content block array to simple string
+                    text_parts = []
+                    for content_block in message["content"]:
+                        if isinstance(content_block, dict) and content_block.get("type") == "text":
+                            text_parts.append(content_block.get("text", ""))
+                        elif isinstance(content_block, dict) and content_block.get("type") == "tool_use":
+                            # Skip tool_use blocks as they're handled separately
+                            continue
+                        elif isinstance(content_block, str):
+                            text_parts.append(content_block)
+                    litellm_request["messages"][i]["content"] = " ".join(text_parts)
+            
+            debug_logger.debug(f"🔧 KIMI_PROCESSING_COMPLETE: {litellm_request['model']} | converted {len(litellm_request['messages'])} messages")
+        
         # For OpenAI models - modify request format to work with limitations
         # Exclude Kimi models as they need complex content format for tool calling
-        if "openai" in litellm_request["model"] and "kimi" not in litellm_request["model"].lower() and "messages" in litellm_request:
+        elif "openai" in litellm_request["model"] and "kimi" not in litellm_request["model"].lower() and "messages" in litellm_request:
+            debug_logger.debug(f"🔧 OPENAI_PROCESSING_START: {litellm_request['model']} | tools={len(request.tools) if request.tools else 0}")
             logger.debug(f"Processing OpenAI model request: {litellm_request['model']}")
             
             # For OpenAI models, we need to convert content blocks to simple strings
@@ -1257,11 +1664,47 @@ async def create_message(
                     logger.warning(f"Message {i} has None content - replacing with placeholder")
                     litellm_request["messages"][i]["content"] = "..." # Fallback placeholder
         
+        # Mark completion of OpenAI processing
+        if "openai" in litellm_request["model"]:
+            debug_logger.debug(f"🔧 OPENAI_PROCESSING_COMPLETE: {litellm_request['model']} | tools={len(request.tools) if request.tools else 0}")
+        
         # Only log basic info about the request, not the full details
         logger.debug(f"Request for model: {litellm_request.get('model')}, stream: {litellm_request.get('stream', False)}")
         
+        # Concise LiteLLM request summary for function calling debugging  
+        if body_json.get("tools"):
+            try:
+                tools_count = len(litellm_request.get('tools', []))
+                msg_count = len(litellm_request.get('messages', []))
+                debug_logger.debug(f"🔧 LITELLM_REQ: {litellm_request.get('model')} | stream={litellm_request.get('stream')} | tools={tools_count} | messages={msg_count}")
+            except Exception as e:
+                debug_logger.error(f"Failed to log LiteLLM request summary: {e}")
+            
+            # Write raw request to file for debugging
+            try:
+                with open(os.path.join(conversation_log_dir, "raw_litellm_request.json"), "w") as f:
+                    import pickle
+                    # Use pickle to serialize everything, then write a summary
+                    f.write("=== LiteLLM Request Debug ===\n")
+                    f.write(f"Model: {litellm_request.get('model')}\n")
+                    f.write(f"Stream: {litellm_request.get('stream')}\n")
+                    f.write(f"Tools count: {len(litellm_request.get('tools', []))}\n")
+                    f.write("=== Tools Summary ===\n")
+                    for i, tool in enumerate(litellm_request.get('tools', [])):
+                        f.write(f"Tool {i}: {tool.get('function', {}).get('name', 'unknown')}\n")
+                    f.write("=== Full Request (str) ===\n")
+                    f.write(str(litellm_request))
+            except Exception as e:
+                debug_logger.error(f"Failed to write raw request to file: {e}")
+        
+        # CRITICAL DECISION POINT: Check streaming mode
+        debug_logger.debug(f"🚦 DECISION_POINT: {request.model} | stream_check={request.stream} | tools={len(request.tools) if request.tools else 0}")
+        
         # Handle streaming mode
         if request.stream:
+            # DEBUG: Track if we reach streaming path
+            debug_logger.debug(f"🎯 ENTERED_STREAMING_PATH: Model={request.model}, Tools={len(request.tools) if request.tools else 0}")
+            
             # Use LiteLLM for streaming
             num_tools = len(request.tools) if request.tools else 0
             
@@ -1274,14 +1717,49 @@ async def create_message(
                 num_tools,
                 200  # Assuming success at this point
             )
-            # Ensure we use the async version for streaming
-            response_generator = await litellm.acompletion(**litellm_request)
+            # Ensure we use the async version for streaming with timeout
+            debug_logger.debug(f"🚀 Starting streaming LiteLLM call with 30-minute timeout...")
+            
+            # CRITICAL: Log the EXACT request LiteLLM will make to ik_llama.cpp
+            debug_logger.debug(f"🔍 EXACT LITELLM REQUEST PAYLOAD:")
+            debug_logger.debug(f"Model: {litellm_request.get('model')}")
+            debug_logger.debug(f"Stream: {litellm_request.get('stream')}")
+            debug_logger.debug(f"Temperature: {litellm_request.get('temperature')}")
+            debug_logger.debug(f"Max tokens: {litellm_request.get('max_tokens')}")
+            debug_logger.debug(f"Tools count: {len(litellm_request.get('tools', []))}")
+            if litellm_request.get('tools'):
+                debug_logger.debug(f"First tool sample: {litellm_request['tools'][0]}")
+            debug_logger.debug(f"Messages count: {len(litellm_request.get('messages', []))}")
+            debug_logger.debug(f"Full request keys: {list(litellm_request.keys())}")
+            debug_logger.debug(f"🚨 CRITICAL CHECK: 'tools' in request keys: {'tools' in litellm_request}")
+            debug_logger.debug(f"🚨 CRITICAL CHECK: Tools value: {litellm_request.get('tools', 'NOT_FOUND')}")
+            
+            try:
+                response_generator = await asyncio.wait_for(
+                    litellm.acompletion(**litellm_request),
+                    timeout=1800.0  # 30 minutes timeout
+                )
+                debug_logger.debug(f"✅ Streaming LiteLLM call initiated successfully")
+            except asyncio.TimeoutError:
+                debug_logger.error(f"⏰ Streaming LiteLLM call timed out after 30 minutes")
+                raise HTTPException(status_code=408, detail="Request timeout - LLM took longer than 30 minutes to respond")
+            except Exception as e:
+                debug_logger.error(f"❌ Streaming LiteLLM call failed: {str(e)}")
+                raise
             
             return StreamingResponse(
                 handle_streaming(response_generator, request),
-                media_type="text/event-stream"
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
             )
         else:
+            # EXECUTION PATH: Non-streaming
+            debug_logger.debug(f"🛤️ NON_STREAMING_PATH: Model={request.model}, Tools={len(request.tools) if request.tools else 0}")
+            
             # Use LiteLLM for regular completion
             num_tools = len(request.tools) if request.tools else 0
             
@@ -1294,18 +1772,105 @@ async def create_message(
                 num_tools,
                 200  # Assuming success at this point
             )
+            # Log before LiteLLM call with configuration debugging
+            debug_logger.debug(f"🔧 LiteLLM Configuration Debug:")
+            debug_logger.debug(f"  - Target model: {litellm_request.get('model')}")
+            try:
+                debug_logger.debug(f"  - LiteLLM version: {litellm.__version__}")
+            except AttributeError:
+                debug_logger.debug(f"  - LiteLLM version: <not available>")
+            debug_logger.debug(f"  - Environment variables:")
+            for key in os.environ:
+                if 'API' in key or 'BASE' in key or 'URL' in key:
+                    debug_logger.debug(f"    {key}={os.environ[key]}")
+            
+            log_end_to_end_flow(request_id, "4_LITELLM_REQUEST", {
+                "model": litellm_request.get("model"),
+                "has_tools": bool(litellm_request.get("tools")),
+                "message_count": len(litellm_request.get("messages", [])),
+                "request": litellm_request
+            }, request.model)
+            
             start_time = time.time()
-            litellm_response = litellm.completion(**litellm_request)
-            logger.debug(f"✅ RESPONSE RECEIVED: Model={litellm_request.get('model')}, Time={time.time() - start_time:.2f}s")
+            # Non-streaming path correlation tracking  
+            correlation_id = f"corr_{uuid.uuid4().hex[:12]}"
+            debug_logger.debug(f"🚀 Starting LiteLLM call with 30-minute timeout...")
+            debug_logger.debug(f"🔄 NON_STREAMING_START [Corr: {correlation_id}]: Model: {request.model}, Has_Tools: {bool(getattr(request, 'tools', None))}")
+            
+            # Non-streaming path debug - consistency with streaming path
+            debug_logger.debug(f"Max tokens: {litellm_request.get('max_tokens')}")
+            debug_logger.debug(f"Tools count: {len(litellm_request.get('tools', []))}")
+            if litellm_request.get('tools'):
+                debug_logger.debug(f"First tool sample: {litellm_request['tools'][0]}")
+            debug_logger.debug(f"Messages count: {len(litellm_request.get('messages', []))}")
+            debug_logger.debug(f"Full request keys: {list(litellm_request.keys())}")
+            debug_logger.debug(f"🚨 CRITICAL CHECK: 'tools' in request keys: {'tools' in litellm_request}")
+            debug_logger.debug(f"🚨 CRITICAL CHECK: Tools value: {litellm_request.get('tools', 'NOT_FOUND')}")
+            
+            try:
+                litellm_response = await asyncio.wait_for(
+                    litellm.acompletion(**litellm_request),
+                    timeout=1800.0  # 30 minutes timeout
+                )
+                debug_logger.debug(f"✅ LiteLLM call completed successfully")
+            except asyncio.TimeoutError:
+                debug_logger.error(f"⏰ LiteLLM call timed out after 30 minutes")
+                raise HTTPException(status_code=408, detail="Request timeout - LLM took longer than 30 minutes to respond")
+            except Exception as e:
+                debug_logger.error(f"❌ LiteLLM call failed: {str(e)}")
+                raise
+            response_time = time.time() - start_time
+            logger.debug(f"✅ RESPONSE RECEIVED: Model={litellm_request.get('model')}, Time={response_time:.2f}s")
+            
+            # Log LiteLLM response
+            log_end_to_end_flow(request_id, "6_LITELLM_RESPONSE", {
+                "response_time_seconds": response_time,
+                "response_type": type(litellm_response).__name__,
+                "has_choices": hasattr(litellm_response, 'choices'),
+                "response": litellm_response
+            }, request.model)
             
             # Convert LiteLLM response to Anthropic format
             anthropic_response = convert_litellm_to_anthropic(litellm_response, request)
+            
+            # Log final Anthropic response
+            response_dict = anthropic_response.dict() if hasattr(anthropic_response, 'dict') else anthropic_response.__dict__
+            log_end_to_end_flow(request_id, "7_FINAL_RESPONSE", {
+                "response_type": "anthropic_format",
+                "stop_reason": response_dict.get("stop_reason"),
+                "content_types": [c.get("type") for c in response_dict.get("content", [])],
+                "has_tool_use": any(c.get("type") == "tool_use" for c in response_dict.get("content", [])),
+                "response": response_dict
+            }, request.model)
+            
+            # Log response if it was a function calling request
+            if body_json.get("tools"):
+                log_function_calling_response(response_dict)
+            
+            # Non-streaming response completion tracking
+            response_duration = time.time() - start_time
+            has_tool_use = any(c.get("type") == "tool_use" for c in response_dict.get("content", []))
+            debug_logger.debug(f"✅ NON_STREAMING_COMPLETE [Corr: {correlation_id}]: Duration: {response_duration:.2f}s, Tools: {has_tool_use}, Stop: {response_dict.get('stop_reason')}")
             
             return anthropic_response
                 
     except Exception as e:
         import traceback
         error_traceback = traceback.format_exc()
+        
+        # Log error with request ID
+        log_end_to_end_flow(request_id, "ERROR", {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "traceback": error_traceback[:500] + "..." if len(error_traceback) > 500 else error_traceback
+        }, body_json.get("model", "unknown"))
+        
+        # Log error if it was a function calling request
+        try:
+            if body_json.get("tools"):
+                log_function_calling_error(e, body_json, "create_message_endpoint")
+        except:
+            pass  # Don't let logging errors crash the main flow
         
         # Capture as much info as possible about the error
         error_details = {
@@ -1410,6 +1975,39 @@ async def count_tokens(
         error_traceback = traceback.format_exc()
         logger.error(f"Error counting tokens: {str(e)}\n{error_traceback}")
         raise HTTPException(status_code=500, detail=f"Error counting tokens: {str(e)}")
+
+@app.post("/v1/chat/completions")  
+async def chat_completions(raw_request: Request):
+    """Log OpenAI format requests and provide guidance"""
+    try:
+        body = await raw_request.body()
+        body_json = json.loads(body.decode('utf-8'))
+        
+        # Log the request
+        request_logger.debug(f"OPENAI_FORMAT_REQUEST /v1/chat/completions: {json.dumps(body_json, indent=2)}")
+        
+        # Log function calling request if it has tools
+        if body_json.get("tools"):
+            log_function_calling_request(body_json, "/v1/chat/completions")
+            
+        return {
+            "error": {
+                "message": "This server expects Anthropic format requests at /v1/messages endpoint, not OpenAI format at /v1/chat/completions",
+                "type": "invalid_request_error",
+                "code": "endpoint_mismatch"
+            },
+            "debug_info": {
+                "received_model": body_json.get("model"),
+                "has_tools": bool(body_json.get("tools")),
+                "num_tools": len(body_json.get("tools", [])),
+                "correct_endpoint": "/v1/messages",
+                "request_logged": True
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in /v1/chat/completions endpoint: {str(e)}")
+        return {"error": {"message": str(e), "type": "server_error"}}
 
 @app.get("/")
 async def root():
