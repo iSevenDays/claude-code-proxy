@@ -80,6 +80,7 @@ app = FastAPI()
 # Get API keys from environment
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_API_BASE = os.environ.get("OPENAI_API_BASE")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 # Get preferred provider (default to openai)
@@ -1106,6 +1107,9 @@ async def create_message(
         # Determine which API key to use based on the model
         if request.model.startswith("openai/"):
             litellm_request["api_key"] = OPENAI_API_KEY
+            if OPENAI_API_BASE:
+                litellm_request["api_base"] = OPENAI_API_BASE
+                logger.debug(f"Using OpenAI API base: {OPENAI_API_BASE} for model: {request.model}")
             logger.debug(f"Using OpenAI API key for model: {request.model}")
         elif request.model.startswith("gemini/"):
             litellm_request["api_key"] = GEMINI_API_KEY
@@ -1115,7 +1119,8 @@ async def create_message(
             logger.debug(f"Using Anthropic API key for model: {request.model}")
         
         # For OpenAI models - modify request format to work with limitations
-        if "openai" in litellm_request["model"] and "messages" in litellm_request:
+        # Exclude Kimi models as they need complex content format for tool calling
+        if "openai" in litellm_request["model"] and "kimi" not in litellm_request["model"].lower() and "messages" in litellm_request:
             logger.debug(f"Processing OpenAI model request: {litellm_request['model']}")
             
             # For OpenAI models, we need to convert content blocks to simple strings
