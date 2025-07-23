@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 import re
 from datetime import datetime
 import sys
+import asyncio
 
 # Load environment variables from .env file
 load_dotenv()
@@ -285,6 +286,9 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 # Get preferred provider (default to openai)
 PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
+
+# Get content flattening configuration (default to false for backward compatibility)
+CONTENT_FLATTENING = os.environ.get("CONTENT_FLATTENING", "false").lower() == "true"
 
 # Get model mapping configuration from environment
 # Default to latest OpenAI models if not set
@@ -871,7 +875,7 @@ def convert_litellm_to_anthropic(litellm_response: Union[Dict[str, Any], Any],
         # Check if this model supports tool_use content blocks
         # Include Claude models and other tool-capable models like Kimi-K2
         is_tool_capable_model = (clean_model.startswith("claude-") or 
-                               clean_model.lower().startswith("kimi"))
+                               clean_model.lower().startswith("kimi") or clean_model.lower().startswith("qwen"))
         debug_logger.debug(f"MODEL_DETECTION: is_tool_capable_model={is_tool_capable_model} (clean_model={clean_model})")
         
         # Debug: log the type and structure of the response
@@ -1503,11 +1507,11 @@ async def create_message(
             litellm_request["api_key"] = ANTHROPIC_API_KEY
             logger.debug(f"Using Anthropic API key for model: {request.model}")
         
-        # For Kimi models - convert complex content blocks to simple strings
-        if "kimi" in litellm_request["model"].lower() and "messages" in litellm_request:
-            debug_logger.debug(f"🔧 KIMI_PROCESSING_START: {litellm_request['model']} | tools={len(request.tools) if request.tools else 0}")
+        # Convert complex content blocks to simple strings for ik_llama.cpp compatibility
+        if CONTENT_FLATTENING and "messages" in litellm_request:
+            debug_logger.debug(f"🔧 CONTENT_FLATTENING_START: {litellm_request['model']} | tools={len(request.tools) if request.tools else 0}")
             
-            # Convert complex content blocks to simple strings for Kimi compatibility
+            # Convert complex content blocks to simple strings for ik_llama.cpp compatibility
             for i, message in enumerate(litellm_request["messages"]):
                 if isinstance(message.get("content"), list):
                     # Convert content block array to simple string
@@ -1522,11 +1526,11 @@ async def create_message(
                             text_parts.append(content_block)
                     litellm_request["messages"][i]["content"] = " ".join(text_parts)
             
-            debug_logger.debug(f"🔧 KIMI_PROCESSING_COMPLETE: {litellm_request['model']} | converted {len(litellm_request['messages'])} messages")
+            debug_logger.debug(f"🔧 CONTENT_FLATTENING_COMPLETE: {litellm_request['model']} | converted {len(litellm_request['messages'])} messages")
         
         # For OpenAI models - modify request format to work with limitations
-        # Exclude Kimi models as they need complex content format for tool calling
-        elif "openai" in litellm_request["model"] and "kimi" not in litellm_request["model"].lower() and "messages" in litellm_request:
+        # Skip if content flattening is already enabled
+        elif "openai" in litellm_request["model"] and not CONTENT_FLATTENING and "messages" in litellm_request:
             debug_logger.debug(f"🔧 OPENAI_PROCESSING_START: {litellm_request['model']} | tools={len(request.tools) if request.tools else 0}")
             logger.debug(f"Processing OpenAI model request: {litellm_request['model']}")
             
